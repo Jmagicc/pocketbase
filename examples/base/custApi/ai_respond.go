@@ -1,24 +1,23 @@
 package custApi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/baidubce/bce-qianfan-sdk/go/qianfan"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase"
-	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/examples/base/dto"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 )
 
 func LoadCustomizeRouter(app *pocketbase.PocketBase) {
-	_ = os.Setenv("QIANFAN_ACCESS_KEY", "GxRvA8gWAh6ubg1KSCBJLzqM")
-	_ = os.Setenv("QIANFAN_SECRET_KEY", "5d0bVsp8ZHWvycqx2eL8lpxAxU6N8CZZ")
+	_ = os.Setenv("QIANFAN_ACCESS_KEY", "ALTAKRVQUbTZEsTsFCOzzre5oy")
+	_ = os.Setenv("QIANFAN_SECRET_KEY", "b5db4f9d06474528877d4468f91e8201")
 
 	HelloExample(app)
 	AiStreamRespond(app)   // AiStreamRespond AI 流式返回
@@ -29,25 +28,21 @@ func LoadCustomizeRouter(app *pocketbase.PocketBase) {
 func AiStreamRespond(app *pocketbase.PocketBase) {
 	app.OnBeforeServe().Add(func(e *core.ServeEvent) error {
 		_, _ = e.Router.AddRoute(echo.Route{
-			Method: http.MethodGet,
+			Method: http.MethodPost,
 			Path:   "/api/chat/stream",
 			Handler: func(c echo.Context) error {
-				// 1. 解析前端给的参数
-				userQuestion := c.QueryParam("question")
-				if userQuestion == "" {
+				// 1. 解析前端的 JSON 请求体
+				var req dto.QuestionRequest
+				if err := c.Bind(&req); err != nil || req.Question == "" {
 					return echo.NewHTTPError(http.StatusBadRequest, "问题不能为空")
 				}
 
-				// 2. 创建 prompt，并合成完整的消息
+				// 2. 构建用户提示词
 				prompt := "你是一个万事通、友好、专业的AI助手，你可以根据用户提供的信息给出合理的解答。请回答以下问题: "
-				fullMessage := prompt + " " + userQuestion
+				fullMessage := prompt + req.Question
 
-				// 3. 调用 SDK 来进行 chat
-				chat := qianfan.NewChatCompletion(
-					qianfan.WithModel("ERNIE-4.0-8K"),
-				)
-
-				// 创建流式请求
+				// 3. 调用 AI SDK 的流式接口
+				chat := qianfan.NewChatCompletion(qianfan.WithModel("ERNIE-4.0-8K"))
 				resp, err := chat.Stream(
 					context.TODO(),
 					&qianfan.ChatCompletionRequest{
@@ -57,34 +52,41 @@ func AiStreamRespond(app *pocketbase.PocketBase) {
 					},
 				)
 				if err != nil {
+					fmt.Println("请求失败:", err)
 					return echo.NewHTTPError(http.StatusInternalServerError, "AI 服务请求失败")
 				}
-
-				// 使用 defer 关闭响应流
 				defer resp.Close()
 
-				// 4. 流式返回响应
+				// 设置响应头以支持流式传输
+				c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
+				c.Response().Header().Set("Cache-Control", "no-cache")
+				c.Response().Header().Set("Connection", "keep-alive")
+				c.Response().WriteHeader(http.StatusOK)
+
+				// 4. 流式发送AI响应数据
 				for {
 					r, err := resp.Recv()
 					if err != nil {
-						// 捕获流式请求的错误并处理
 						return echo.NewHTTPError(http.StatusInternalServerError, "接收数据失败: "+err.Error())
 					}
 
-					// 判断是否结束
 					if resp.IsEnd {
 						break
 					}
+
 					responseContent := r.Result
-					// 将返回的内容推送到前端
-					if err := c.Stream(http.StatusOK, "text/event-stream", bytes.NewReader([]byte(responseContent))); err != nil {
-						return echo.NewHTTPError(http.StatusInternalServerError, "流式返回失败")
+					if _, err := c.Response().Write([]byte(responseContent + "\n")); err != nil {
+						return echo.NewHTTPError(http.StatusInternalServerError, "流式发送失败")
 					}
+					c.Response().Flush()
+
+					time.Sleep(50 * time.Millisecond) // 根据需求调整延迟
 				}
+
 				return nil
 			},
 			Middlewares: []echo.MiddlewareFunc{
-				apis.RequireAdminAuth(),
+				// 根据需要添加认证中间件
 			},
 		})
 		return nil
@@ -98,7 +100,8 @@ func AiCombineTodoList(app *pocketbase.PocketBase) {
 			Path:   "/api/ai/todolist/combine",
 			Handler: func(c echo.Context) error {
 				var request struct {
-					Content string `json:"content"`
+					Question string `json:"question"`
+					Content  string `json:"content"`
 				}
 				if err := c.Bind(&request); err != nil {
 					return echo.NewHTTPError(http.StatusBadRequest, "无效的请求参数")
@@ -140,21 +143,38 @@ func AiCombineTodoList(app *pocketbase.PocketBase) {
 					return echo.NewHTTPError(http.StatusInternalServerError, "AI 服务请求失败")
 				}
 
-				// 4. 解析 AI 返回的数据
-				var todoResponse dto.TodoResponse
-				err = json.Unmarshal([]byte(resp.Result), &todoResponse)
-				if err != nil {
-					return echo.NewHTTPError(http.StatusInternalServerError, "解析 AI 响应失败")
+				validJSON := isValidJSON(resp.Result)
+				if !validJSON {
+					return echo.NewHTTPError(http.StatusInternalServerError, "AI 服务返回的 JSON 数据无效")
 				}
 
-				// 5. 为返回的待办事项列表格式化 createdAt
-				todoResponse.CreatedAt = time.Now().Format(time.RFC3339) // 使用 RFC3339 格式化当前时间
+				// 确保 AI 返回的数据为 JSON 格式
+				var todoResponse []dto.TodoStep
+				resp.Result = correctJSONFormat(resp.Result)
+
+				// 尝试解析为包含 steps 的对象
+				var wrapper struct {
+					Steps []dto.TodoStep `json:"steps"`
+				}
+				if err := json.Unmarshal([]byte(resp.Result), &wrapper); err == nil {
+					todoResponse = wrapper.Steps
+				} else if err := json.Unmarshal([]byte(resp.Result), &todoResponse); err != nil {
+					// 尝试直接解析为数组
+					fmt.Printf("解析 AI 响应失败，返回的内容：%s, 错误: %v\n", resp.Result, err)
+					todoResponse = getDefaultTodoSteps()
+				}
+
+				result := dto.TodoResponse{
+					Question:  request.Question,
+					Steps:     todoResponse,
+					CreatedAt: time.Now().Format(time.RFC3339),
+				}
 
 				// 6. 返回待办事项列表的 JSON 响应
-				return c.JSON(http.StatusOK, todoResponse)
+				return c.JSON(http.StatusOK, result)
 			},
 			Middlewares: []echo.MiddlewareFunc{
-				apis.RequireAdminAuth(),
+				//apis.RequireAdminAuth(),
 			},
 		})
 		return nil
@@ -171,4 +191,29 @@ func HelloExample(app *pocketbase.PocketBase) {
 		})
 		return nil
 	})
+}
+
+// 辅助函数：检查字符串是否为有效 JSON 格式
+func isValidJSON(data string) bool {
+	var js json.RawMessage
+	return json.Unmarshal([]byte(data), &js) == nil
+}
+
+// 辅助函数：尝试修正不规范的 JSON 数据
+func correctJSONFormat(data string) string {
+	// 简单处理：去掉非 JSON 数据的头尾信息或格式问题
+	re := regexp.MustCompile(`(?s)({.*})`)
+	match := re.FindString(data)
+	if match != "" {
+		return match
+	}
+	// 返回一个空的 JSON 数组作为兜底方案
+	return "[]"
+}
+
+// 辅助函数：设置默认待办事项步骤，避免空数据情况
+func getDefaultTodoSteps() []dto.TodoStep {
+	return []dto.TodoStep{
+		{ID: 1, Content: "暂无内容", IsCompleted: false},
+	}
 }
