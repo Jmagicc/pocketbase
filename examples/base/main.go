@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/pocketbase/pocketbase/examples/base/custApi"
 	"log"
 	"os"
 	"path/filepath"
@@ -86,7 +87,7 @@ func main() {
 		"the default SELECT queries timeout in seconds",
 	)
 
-	app.RootCmd.ParseFlags(os.Args[1:])
+	_ = app.RootCmd.ParseFlags(os.Args[1:])
 
 	// ---------------------------------------------------------------
 	// Plugins and hooks:
@@ -120,6 +121,9 @@ func main() {
 		e.Router.GET("/*", apis.StaticDirectoryHandler(os.DirFS(publicDir), indexFallback))
 		return nil
 	})
+
+	// 自定义api
+	custApi.LoadCustomizeRouter(app)
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
