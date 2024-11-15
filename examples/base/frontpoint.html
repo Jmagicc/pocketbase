@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>清蒸鲤鱼的步骤</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        #response {
+            white-space: pre-wrap; /* 保持文本格式 */
+            word-wrap: break-word;
+            background-color: #f5f5f5;
+            padding: 15px;
+            border: 1px solid #ccc;
+            margin-top: 20px;
+            min-height: 100px;
+        }
+    </style>
+</head>
+<body>
+<!-- 输入框和提交按钮 -->
+<input type="text" id="question" placeholder="请输入你的问题" />
+<button onclick="submitQuestion()">提交问题</button>
+
+<!-- 显示响应的区域 -->
+<div id="response"></div>
+
+<script>
+    function submitQuestion() {
+        // 获取用户输入的问题
+        const question = document.getElementById("question").value;
+        if (!question.trim()) {
+            alert("请输入问题！");
+            return;
+        }
+
+        // 清空响应区域
+        document.getElementById("response").textContent = "正在加载...";
+
+        // 创建请求体
+        const requestData = {
+            question: question
+        };
+
+        // 使用 fetch 发送 POST 请求
+        fetch('http://43.138.201.159:8090/api/chat/stream', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestData)
+        })
+            .then(response => {
+                // 处理流式返回
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let result = '';
+
+                // 使用流式读取数据
+                reader.read().then(function processText({ done, value }) {
+                    if (done) {
+                        // 流式数据读取完毕
+                        return;
+                    }
+
+                    // 解码并拼接返回数据
+                    result += decoder.decode(value, { stream: true });
+
+                    // 更新响应区域
+                    document.getElementById("response").textContent = result;
+
+                    // 继续读取下一段数据
+                    reader.read().then(processText);
+                });
+            })
+            .catch(error => {
+                // 错误处理
+                console.error("请求失败", error);
+                document.getElementById("response").textContent = "请求失败，请稍后再试。";
+            });
+    }
+</script>
+
+</body>
+</html>

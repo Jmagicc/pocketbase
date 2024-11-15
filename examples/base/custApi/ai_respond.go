@@ -143,11 +143,6 @@ func AiCombineTodoList(app *pocketbase.PocketBase) {
 					return echo.NewHTTPError(http.StatusInternalServerError, "AI 服务请求失败")
 				}
 
-				validJSON := isValidJSON(resp.Result)
-				if !validJSON {
-					return echo.NewHTTPError(http.StatusInternalServerError, "AI 服务返回的 JSON 数据无效")
-				}
-
 				// 确保 AI 返回的数据为 JSON 格式
 				var todoResponse []dto.TodoStep
 				resp.Result = correctJSONFormat(resp.Result)
@@ -191,12 +186,6 @@ func HelloExample(app *pocketbase.PocketBase) {
 		})
 		return nil
 	})
-}
-
-// 辅助函数：检查字符串是否为有效 JSON 格式
-func isValidJSON(data string) bool {
-	var js json.RawMessage
-	return json.Unmarshal([]byte(data), &js) == nil
 }
 
 // 辅助函数：尝试修正不规范的 JSON 数据
