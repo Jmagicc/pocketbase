@@ -9,9 +9,11 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/examples/base/dto"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -63,30 +65,44 @@ func AiStreamRespond(app *pocketbase.PocketBase) {
 				c.Response().Header().Set("Connection", "keep-alive")
 				c.Response().WriteHeader(http.StatusOK)
 
-				// 4. 流式发送AI响应数据
-				for {
-					r, err := resp.Recv()
-					if err != nil {
-						return echo.NewHTTPError(http.StatusInternalServerError, "接收数据失败: "+err.Error())
-					}
+				// 4. 创建通道用于流式传输
+				chanStream := make(chan string)
 
-					if resp.IsEnd {
-						break
+				// 开启 goroutine 处理 AI 流式响应
+				go func() {
+					defer close(chanStream)
+					for {
+						r, err := resp.Recv()
+						if err == io.EOF || resp.IsEnd {
+							break
+						}
+						if err != nil {
+							chanStream <- fmt.Sprintf("[Error: %s]", err.Error())
+							break
+						}
+						// 去除数据块末尾的换行符
+						processedContent := strings.TrimSpace(r.Result)
+						chanStream <- processedContent
 					}
+				}()
 
-					responseContent := r.Result
-					if _, err := c.Response().Write([]byte(responseContent + "\n")); err != nil {
-						return echo.NewHTTPError(http.StatusInternalServerError, "流式发送失败")
+				// 5. 流式发送 AI 响应数据
+				for msg := range chanStream {
+					// 检查是否是错误消息
+					if strings.HasPrefix(msg, "[Error:") {
+						return echo.NewHTTPError(http.StatusInternalServerError, msg)
+					}
+					// 写入处理后的数据块
+					if _, err := c.Response().Write([]byte(msg)); err != nil {
+						return echo.NewHTTPError(http.StatusInternalServerError, "流式发送失败: "+err.Error())
 					}
 					c.Response().Flush()
-
-					time.Sleep(50 * time.Millisecond) // 根据需求调整延迟
 				}
 
 				return nil
 			},
 			Middlewares: []echo.MiddlewareFunc{
-				// 根据需要添加认证中间件
+				// 根据需要添加认证中间件，例如: AuthenticationMiddleware
 			},
 		})
 		return nil
